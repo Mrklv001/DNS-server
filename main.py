@@ -1,20 +1,54 @@
 import socket
 
 
-def build_dns_header():
-    # Packet Identifier (ID) - 16 bits (1234 in big-endian)
-    id = 1234
-    # Flags: QR=1 (response), остальные флаги 0
-    flags = 0x8000  # 1000 0000 0000 0000 in binary
-    # QDCOUNT = 1 (один вопрос)
+def parse_dns_header(header):
+    # Разбираем первые 12 байт запроса
+    id = int.from_bytes(header[0:2], byteorder='big')
+    flags = int.from_bytes(header[2:4], byteorder='big')
+
+    # Извлекаем флаги
+    qr = (flags >> 15) & 0x1
+    opcode = (flags >> 11) & 0xF
+    rd = (flags >> 8) & 0x1
+
+    return {
+        'id': id,
+        'qr': qr,
+        'opcode': opcode,
+        'rd': rd
+    }
+
+
+def build_dns_header(request_header):
+    # Парсим заголовок запроса
+    parsed_header = parse_dns_header(request_header)
+
+    # ID берём из запроса
+    id = parsed_header['id']
+
+    # Формируем флаги ответа
+    qr = 1  # Ответ (1)
+    opcode = parsed_header['opcode']
+    aa = 0  # Не авторитативный ответ
+    tc = 0  # Не обрезан
+    rd = parsed_header['rd']  # Копируем из запроса
+    ra = 0  # Рекурсия недоступна
+    z = 0   # Зарезервировано (0)
+
+    # RCODE: 0, если OPCODE=0, иначе 4
+    rcode = 0 if opcode == 0 else 4
+
+    # Собираем флаги в 2 байта
+    flags = (qr << 15) | (opcode << 11) | (aa << 10) | (
+        tc << 9) | (rd << 8) | (ra << 7) | (z << 4) | rcode
+
+    # Счётчики (можно оставить как в прошлый раз)
     qdcount = 1
-    # ANCOUNT = 1 (один ответ)
     ancount = 1
-    # NSCOUNT, ARCOUNT = 0 (пока не используются)
     nscount = 0
     arcount = 0
 
-    # Упаковываем всё в big-endian
+    # Упаковываем в big-endian
     header = (
         id.to_bytes(2, byteorder='big') +
         flags.to_bytes(2, byteorder='big') +
@@ -39,7 +73,6 @@ def build_dns_question():
     # Класс записи (1 = IN, интернет)
     qclass = 1
 
-    # Упаковываем всё в big-endian
     question = (
         name +
         qtype.to_bytes(2, byteorder='big') +
@@ -51,9 +84,9 @@ def build_dns_question():
 def build_dns_answer():
     # Доменное имя (то же, что в вопросе)
     name = (
-        b"\x0ccodecrafters"  # \x0c (12) + "codecrafters"
-        b"\x02io"            # \x02 (2) + "io"
-        b"\x00"               # Завершающий нулевой байт
+        b"\x0ccodecrafters"
+        b"\x02io"
+        b"\x00"
     )
 
     # Тип записи (1 = A-запись)
@@ -67,7 +100,6 @@ def build_dns_answer():
     # Данные (IPv4-адрес: 8.8.8.8)
     rdata = b"\x08\x08\x08\x08"
 
-    # Упаковываем всё в big-endian
     answer = (
         name +
         atype.to_bytes(2, byteorder='big') +
@@ -88,11 +120,11 @@ def main():
             buf, source = udp_socket.recvfrom(512)
 
             # Собираем DNS-ответ:
-            # 1. Заголовок (12 байт)
-            response = build_dns_header()
-            # 2. Question Section (домен + тип + класс)
+            # 1. Заголовок (анализируем запрос)
+            response = build_dns_header(buf[:12])
+            # 2. Question Section
             response += build_dns_question()
-            # 3. Answer Section (ответ)
+            # 3. Answer Section
             response += build_dns_answer()
 
             # Отправляем ответ
