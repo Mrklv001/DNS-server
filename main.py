@@ -2,15 +2,11 @@ import socket
 
 
 def parse_dns_header(header):
-    # Разбираем первые 12 байт запроса
     id = int.from_bytes(header[0:2], byteorder='big')
     flags = int.from_bytes(header[2:4], byteorder='big')
-
-    # Извлекаем флаги
     qr = (flags >> 15) & 0x1
     opcode = (flags >> 11) & 0xF
     rd = (flags >> 8) & 0x1
-
     return {
         'id': id,
         'qr': qr,
@@ -19,36 +15,49 @@ def parse_dns_header(header):
     }
 
 
+def parse_dns_question(data, offset):
+    # Извлекаем имя домена
+    labels = []
+    while True:
+        length = data[offset]
+        if length == 0:
+            offset += 1
+            break
+        labels.append(data[offset+1:offset+1+length])
+        offset += 1 + length
+    name = b''.join(
+        [bytes([len(label)]) + label for label in labels]) + b'\x00'
+
+    # Тип и класс (после имени)
+    qtype = int.from_bytes(data[offset:offset+2], byteorder='big')
+    qclass = int.from_bytes(data[offset+2:offset+4], byteorder='big')
+    offset += 4
+
+    return {
+        'name': name,
+        'qtype': qtype,
+        'qclass': qclass,
+        'end_offset': offset
+    }
+
+
 def build_dns_header(request_header):
-    # Парсим заголовок запроса
     parsed_header = parse_dns_header(request_header)
-
-    # ID берём из запроса
     id = parsed_header['id']
-
-    # Формируем флаги ответа
-    qr = 1  # Ответ (1)
+    qr = 1
     opcode = parsed_header['opcode']
-    aa = 0  # Не авторитативный ответ
-    tc = 0  # Не обрезан
-    rd = parsed_header['rd']  # Копируем из запроса
-    ra = 0  # Рекурсия недоступна
-    z = 0   # Зарезервировано (0)
-
-    # RCODE: 0, если OPCODE=0, иначе 4
+    aa = 0
+    tc = 0
+    rd = parsed_header['rd']
+    ra = 0
+    z = 0
     rcode = 0 if opcode == 0 else 4
-
-    # Собираем флаги в 2 байта
     flags = (qr << 15) | (opcode << 11) | (aa << 10) | (
         tc << 9) | (rd << 8) | (ra << 7) | (z << 4) | rcode
-
-    # Счётчики (можно оставить как в прошлый раз)
     qdcount = 1
     ancount = 1
     nscount = 0
     arcount = 0
-
-    # Упаковываем в big-endian
     header = (
         id.to_bytes(2, byteorder='big') +
         flags.to_bytes(2, byteorder='big') +
@@ -60,19 +69,9 @@ def build_dns_header(request_header):
     return header
 
 
-def build_dns_question():
-    # Доменное имя: codecrafters.io
-    name = (
-        b"\x0ccodecrafters"  # \x0c (12) + "codecrafters"
-        b"\x02io"            # \x02 (2) + "io"
-        b"\x00"               # Завершающий нулевой байт
-    )
-
-    # Тип записи (1 = A-запись)
-    qtype = 1
-    # Класс записи (1 = IN, интернет)
-    qclass = 1
-
+def build_dns_question(name):
+    qtype = 1  # A-запись
+    qclass = 1  # IN
     question = (
         name +
         qtype.to_bytes(2, byteorder='big') +
@@ -81,25 +80,12 @@ def build_dns_question():
     return question
 
 
-def build_dns_answer():
-    # Доменное имя (то же, что в вопросе)
-    name = (
-        b"\x0ccodecrafters"
-        b"\x02io"
-        b"\x00"
-    )
-
-    # Тип записи (1 = A-запись)
-    atype = 1
-    # Класс записи (1 = IN, интернет)
-    aclass = 1
-    # TTL (60 секунд)
-    ttl = 60
-    # Длина данных (4 байта для IPv4)
-    rdlength = 4
-    # Данные (IPv4-адрес: 8.8.8.8)
-    rdata = b"\x08\x08\x08\x08"
-
+def build_dns_answer(name):
+    atype = 1  # A-запись
+    aclass = 1  # IN
+    ttl = 60  # 60 секунд
+    rdlength = 4  # IPv4 = 4 байта
+    rdata = b"\x08\x08\x08\x08"  # 8.8.8.8
     answer = (
         name +
         atype.to_bytes(2, byteorder='big') +
@@ -119,15 +105,21 @@ def main():
         try:
             buf, source = udp_socket.recvfrom(512)
 
-            # Собираем DNS-ответ:
-            # 1. Заголовок (анализируем запрос)
-            response = build_dns_header(buf[:12])
-            # 2. Question Section
-            response += build_dns_question()
-            # 3. Answer Section
-            response += build_dns_answer()
+            # Разбираем заголовок запроса
+            request_header = buf[:12]
+            parsed_header = parse_dns_header(request_header)
 
-            # Отправляем ответ
+            # Разбираем Question Section
+            question_data = parse_dns_question(buf, 12)
+            name = question_data['name']
+            qtype = question_data['qtype']
+            qclass = question_data['qclass']
+
+            # Формируем ответ
+            response = build_dns_header(request_header)
+            response += build_dns_question(name)
+            response += build_dns_answer(name)
+
             udp_socket.sendto(response, source)
         except Exception as e:
             print(f"Error receiving data: {e}")
